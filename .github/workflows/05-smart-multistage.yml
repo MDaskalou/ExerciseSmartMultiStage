@@ -1,0 +1,142 @@
+name: Smart Multi-Stage .NET CI/CD
+
+# Denna workflow körs vid varje push till alla branches
+on:
+  push:
+
+jobs:
+  # ======================================================
+  # STEG 1: Bygg och publicera projektet
+  # ======================================================
+  build:
+    name: Build & Publish .NET Project
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Hämta källkod
+        uses: actions/checkout@v4
+
+      - name: Sätt upp .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          # Uppdatera denna till din .NET-version om nödvändigt
+          dotnet-version: '8.0.x'
+
+      - name: Återställ NuGet-paket
+        run: dotnet restore
+        
+      - name: Bygg projektet
+        run: dotnet build --no-restore -c Release
+
+      # --- Bonus-steg: Publicera ---
+      # Detta skapar en färdig "out"-mapp med bara de filer
+      # som behövs för att köra applikationen.
+      - name: Publicera projektet
+        run: dotnet publish --no-build -c Release -o ./publish-output
+      
+      # Vi sparar den publicerade mappen som en "artifact",
+      # så att deploy-jobben kan ladda ner och använda den.
+      - name: Ladda upp artefakt
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-api-artifact
+          path: ./publish-output
+
+  # ======================================================
+  # STEG 2: Kör alla tester
+  # ======================================================
+  test:
+    name: Run NUnit Tests
+    runs-on: ubuntu-latest
+    # Detta jobb startar inte förrän 'build'-jobbet är klart.
+    needs: build
+
+    steps:
+      - name: Hämta källkod
+        uses: actions/checkout@v4
+
+      - name: Sätt upp .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Återställ NuGet-paket
+        run: dotnet restore
+        
+      # Vi kör testerna. Om något test misslyckas,
+      # kommer detta steg att misslyckas, och hela pipelinen
+      # (inklusive deploy-jobben) stoppas.
+      - name: Kör tester
+        run: dotnet test --no-restore --verbosity normal
+
+  # ======================================================
+  # STEG 3: Driftsätt till DEV (om ej 'main')
+  # ======================================================
+  deploy-dev:
+    name: Deploy to DEVELOPMENT
+    runs-on: ubuntu-latest
+    # Detta jobb väntar på att 'test'-jobbet ska lyckas.
+    needs: test
+    
+    # KRAV: Detta jobb körs BARA om branchen INTE är 'main'.
+    if: github.ref_name != 'main'
+    
+    # Kopplar jobbet till din 'dev'-miljö
+    environment: dev
+    
+    steps:
+      - name: Ladda ner publicerad artefakt
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-api-artifact
+          path: ./deploy-files
+          
+      - name: Simulera deploy till DEV
+        run: |
+          echo "Simulerar deploy till ${{ github.environment }}..."
+          echo "Tjänstnamn från variabel: ${{ vars.SERVICE_NAME }}"
+          echo "Innehåll i deploy-mappen:"
+          ls -R ./deploy-files
+          
+      # --- Bonus-steg ---
+      - name: ✅ Deployment completed successfully
+        run: echo "Lyckad deploy till DEV."
+
+  # ======================================================
+  # STEG 4: Driftsätt till PROD (endast 'main')
+  # ======================================================
+  deploy-prod:
+    name: Deploy to PRODUCTION
+    runs-on: ubuntu-latest
+    # Detta jobb väntar också på att 'test'-jobbet ska lyckas.
+    needs: test
+    
+    # KRAV: Detta jobb körs BARA om branchen ÄR 'main'.
+    if: github.ref_name == 'main'
+    
+    # Kopplar jobbet till 'prod'-miljön.
+    # Detta kommer automatiskt att pausa jobbet och
+    # vänta på manuellt godkännande pga dina regler.
+    environment: prod
+
+    steps:
+      - name: Ladda ner publicerad artefakt
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-api-artifact
+          path: ./deploy-files
+
+      - name: Simulera deploy till PROD
+        env:
+          # Mappar din 'prod'-secret till en miljövariabel
+          API_KEY: ${{ secrets.PROD_API_KEY }}
+        run: |
+          echo "Simulerar deploy till ${{ github.environment }}..."
+          echo "Tjänstnamn från variabel: ${{ vars.SERVICE_NAME }}"
+          echo "Använder API-nyckel (maskerad): $API_KEY"
+          echo "Innehåll i deploy-mappen:"
+          ls -R ./deploy-files
+          
+      # --- Bonus-steg ---
+      - name: ✅ Deployment completed successfully
+        run: echo "Lyckad deploy till PROD."
